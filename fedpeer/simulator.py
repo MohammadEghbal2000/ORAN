@@ -37,6 +37,7 @@ class Config:
     # B3 language evidence
     evidence: str = "honest"     # profile of adversarial agents, see evidence.PROFILES
     adversary_frac: float = 0.3  # share of (tenant, cell) agents using that profile; the rest are honest
+    adversary_unit: str = "agent"  # "agent": per (tenant, cell) draw; "tenant": one tenant uses it in every cell
     language: bool = True        # ablation: False keeps messages but never uses them
     verification: bool = True    # ablation: False never updates reputation
     extractor: str = "mock"      # "mock" or "llm"
@@ -95,8 +96,14 @@ def run(cfg):
     active, peers, negs, sla = [], {}, [], []
 
     lang_rng = np.random.default_rng([cfg.seed, 1])  # own stream, so traces and preferences stay matched
-    profiles = {(s, n): cfg.evidence if lang_rng.random() < cfg.adversary_frac else "honest"
-                for s in range(n_t) for n in range(cfg.n_cells)}
+    if cfg.adversary_unit == "agent":
+        profiles = {(s, n): cfg.evidence if lang_rng.random() < cfg.adversary_frac else "honest"
+                    for s in range(n_t) for n in range(cfg.n_cells)}
+    elif cfg.adversary_unit == "tenant":  # adversary_frac is ignored: 1 of 3 tenants = a third of all agents
+        bad = lang_rng.integers(n_t)
+        profiles = {(s, n): cfg.evidence if s == bad else "honest" for s in range(n_t) for n in range(cfg.n_cells)}
+    else:
+        raise ValueError(f"unknown adversary_unit {cfg.adversary_unit!r}")
     if cfg.method in LANGUAGE and cfg.extractor == "llm":
         from .llm import LLMExtractor
         extractor = LLMExtractor(cfg.llm_model, cfg.base_url)

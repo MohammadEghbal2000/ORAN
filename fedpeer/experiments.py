@@ -40,6 +40,14 @@ def grid():
     for kw in ({"aggregation": "median"}, {"aggregation": "fedavg"}, {"personalize": False},
                {"pooled_reputation": False}, {"language": False}, {"verification": False}):
         add(("P",), **lie, **kw)
+    # E7 (amendment 1): tenant-level adversaries, one tenant deceives in every cell
+    for ev in ("noise", "contradictory", "strategic_lie", "rep_then_lie"):
+        kw = dict(heterogeneity="iid", evidence=ev, adversary_unit="tenant")
+        add(LEARNERS, **kw)
+        add(("P",), **kw, pooled_reputation=False)
+    for kw in ({"aggregation": "median"}, {"aggregation": "fedavg"}, {"personalize": False},
+               {"language": False}, {"verification": False}):
+        add(("P",), heterogeneity="iid", evidence="strategic_lie", adversary_unit="tenant", **kw)
     # E6 sensitivity of P (base P comes from E1 iid)
     for kw in ({"mu": 1.0}, {"mu": 100.0}, {"sync_epochs": 2}, {"sync_epochs": 8}, {"lam": 0.5}, {"lam": 0.9}):
         add(("P",), seeds=range(5), heterogeneity="iid", **kw)
@@ -47,7 +55,10 @@ def grid():
 
 
 def key(cfg):
-    return hashlib.sha1(json.dumps(asdict(cfg), sort_keys=True).encode()).hexdigest()[:16]
+    d = asdict(cfg)
+    if d["adversary_unit"] == "agent":  # added after the first grid; keeps the earlier runs' keys valid
+        del d["adversary_unit"]
+    return hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _work(cfg):

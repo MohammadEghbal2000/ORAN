@@ -49,6 +49,19 @@ def test_theta_load_roundtrip_and_simplex_repair():
     assert m2.theta[:3].sum() == pytest.approx(1)
 
 
+def test_tenant_level_adversary_lies_in_every_cell():
+    negs = run(Config(method="B3", n_cells=4, n_epochs=24, seed=1, evidence="strategic_lie",
+                      adversary_unit="tenant"))["negotiations"]
+    profiles = {}
+    for r in negs:
+        if "counterpart_profile" in r:
+            profiles.setdefault(r["donor"], set()).add(r["counterpart_profile"])
+    assert all(len(p) == 1 for p in profiles.values())  # one profile per tenant, whatever the cell
+    assert sum(p == {"strategic_lie"} for p in profiles.values()) <= 1
+    with pytest.raises(ValueError):
+        run(Config(method="B3", n_cells=2, n_epochs=2, adversary_unit="cell"))
+
+
 def test_federation_transfers_to_cold_start_cells():
     """H1 core: with shared tenant priorities, a fresh cell's first model is already informed."""
     res = {m: run(Config(method=m, n_cells=6, n_epochs=48, seed=3, heterogeneity="iid"))["summary"]
