@@ -1,16 +1,18 @@
-"""Multi-cell epoch loop (proposal Sec. 8, Steps 1-6) for B0 static slicing, B1 full-information
-Nash mediator and B2 offers-only local peer models."""
+"""Multi-cell epoch loop (proposal Sec. 8, Steps 1-7) for B0 static slicing, B1 full-information
+Nash mediator, B2 offers-only local peer models and B3 = B2 + gated language with verified reputation."""
 from dataclasses import dataclass
 
 import numpy as np
 
 from .bargaining import benchmarks
 from .contracts import Q_GRID, X, sample_preferences
+from .evidence import ADMIT, MockExtractor, compose, consistency, f1, gate, is_true, match_counts
 from .negotiation import Negotiator, negotiate
 from .network import STATIC_SHARE, TENANTS, Ledger, demand_traces
 from .peer_model import PeerModel
+from .reputation import BetaReputation, verify
 
-METHODS = ("B0", "B1", "B2")
+METHODS = ("B0", "B1", "B2", "B3")
 BILATERAL = ("agreement", "timeout", "no_agreement")
 
 
@@ -27,6 +29,15 @@ class Config:
     fallback_cap: float = 10.0   # PRBs of pre-authorized emergency allocation
     credit0: float = 100.0
     budget: float = 100.0        # PRBs per cell
+    # B3 language evidence
+    evidence: str = "honest"     # profile of adversarial agents, see evidence.PROFILES
+    adversary_frac: float = 0.3  # share of (tenant, cell) agents using that profile; the rest are honest
+    language: bool = True        # ablation: False keeps messages but never uses them
+    verification: bool = True    # ablation: False never updates reputation
+    extractor: str = "mock"      # "mock" or "llm"
+    extract_noise: float = 0.05
+    llm_model: str = "gpt-4.1-nano"
+    base_url: str | None = None  # e.g. http://localhost:11434/v1 for Ollama
 
 
 def _alloc(static, active, n):
@@ -65,8 +76,51 @@ def run(cfg):
     ledger = Ledger(n_t, cfg.credit0)
     active, peers, negs, sla = [], {}, [], []
 
+    lang_rng = np.random.default_rng([cfg.seed, 1])  # own stream, so traces and preferences stay matched
+    profiles = {(s, n): cfg.evidence if lang_rng.random() < cfg.adversary_frac else "honest"
+                for s in range(n_t) for n in range(cfg.n_cells)}
+    if cfg.method == "B3" and cfg.extractor == "llm":
+        from .llm import LLMExtractor
+        extractor = LLMExtractor(cfg.llm_model, cfg.base_url)
+    else:
+        extractor = MockExtractor(np.random.default_rng([cfg.seed, 2]), cfg.extract_noise)
+    rep, pending, said = BetaReputation(), [], {}
+    stats = {"tp": 0, "fp": 0, "fn": 0, "g_true": [], "g_false": []}
+
+    def converse(hist, R, D, n, t):
+        """A message rides with every offer (Method step 4); returns the gated preference claims each side learns."""
+        learn = {R: [], D: []}
+        for k, (role, _) in enumerate(hist):
+            snd, obs = (R, D) if role == "R" else (D, R)
+            prof = profiles[snd, n]
+            lying = prof == "strategic_lie" or (prof == "rep_then_lie" and t >= cfg.n_epochs // 2)
+            msg = compose(lang_rng, prof, prefs[snd, n], role, need[n, snd, min(t + 1, cfg.n_epochs - 1)],
+                          snd, n, t, f"{t}:{n}:{R}:{D}:{k}", lying)
+            evs = extractor(msg)
+            for key, x in zip(("tp", "fp", "fn"), match_counts(msg.claims, evs)):
+                stats[key] += x
+            for ev in evs:
+                if not ev.v:
+                    continue
+                if ev.claim.kind == "kpi_need":  # verifiable later, feeds reputation only
+                    if t + 1 < cfg.n_epochs:
+                        pending.append((t + 1, n, obs, snd, ev.claim.value, ev.event_id))
+                    continue
+                history = said.setdefault((n, obs, snd), [])
+                # a = 1: preference claims are not verifiable now (neutral, not "true")
+                g = gate(ev.c, ev.v, consistency(ev.claim, history), 1.0, rep.score((n, obs, snd)))
+                history.append(ev.claim)
+                stats["g_true" if is_true(ev.claim, prefs[snd, n], role) else "g_false"].append(g)
+                if cfg.language:
+                    learn[obs].append((ev.claim, role, g))
+        return learn
+
     for t in range(cfg.n_epochs):
         active = [c for c in active if c[4] > t]
+        if cfg.verification:  # Method step 7: verify after the measurement window
+            for due, n, obs, snd, claimed, eid in [p for p in pending if p[0] <= t]:
+                rep.update((n, obs, snd), verify(claimed, need[n, snd, due]), eid)
+        pending[:] = [p for p in pending if p[0] > t]
         for n in range(cfg.n_cells):
             nd = need[n, :, t]
             b, _ = _alloc(static, active, n)
@@ -113,13 +167,14 @@ def run(cfg):
                     for D in sorted(donors, key=score.get, reverse=True):
                         m_rd, m_dr = models[D]
                         err = {"w_mae": m_rd.weight_mae(prefs[D, n].w), "u_mae": m_rd.utility_mae(prefs[D, n], "D"),
-                               "n_seen": m_rd.n_negotiations}
+                               "rank": m_rd.rank_agreement(prefs[D, n].w), "n_seen": m_rd.n_negotiations}
                         outcome, idx, rounds, hist = negotiate(
                             Negotiator(uR, rR, "R", m_rd.utility("D"), cfg.lam),
                             Negotiator(prefs[D, n].utility("D"), prefs[D, n].r["D"], "D", m_dr.utility("R"), cfg.lam),
                             feas[D], cfg.t_max)
-                        m_rd.observe(hist, "D", outcome == "agreement")
-                        m_dr.observe(hist, "R", outcome == "agreement")
+                        learn = converse(hist, R, D, n, t) if cfg.method == "B3" else {R: (), D: ()}
+                        m_rd.observe(hist, "D", outcome == "agreement", learn[R])
+                        m_dr.observe(hist, "R", outcome == "agreement", learn[D])
                         negs.append({**base, "donor": TENANTS[D], "donor_slack": slack[D], "outcome": outcome,
                                      "rounds": rounds, **err, **_evaluate(prefs[R, n], prefs[D, n], feas[D], idx)})
                         if outcome == "agreement":
@@ -142,10 +197,10 @@ def run(cfg):
             sla += [{"t": t, "cell": n, "tenant": TENANTS[s], "need": nd[s], "alloc": b[s]} for s in range(n_t)]
 
     return {"negotiations": negs, "sla": sla, "credit_total": float(ledger.balance.sum()),
-            "summary": summarize(negs, sla, cfg.budget)}
+            "summary": summarize(negs, sla, cfg.budget, stats if cfg.method == "B3" else None)}
 
 
-def summarize(negs, sla, budget):
+def summarize(negs, sla, budget, stats=None):
     nan = float("nan")
     bil = [r for r in negs if r["outcome"] in BILATERAL]
     agr = [r for r in bil if r["outcome"] == "agreement"]
@@ -172,7 +227,14 @@ def summarize(negs, sla, budget):
         s[f"sla_{name}"] = float(ok[[r["tenant"] == name for r in sla]].mean())
     learned = [r for r in bil if "w_mae" in r]
     if learned:  # cold = model has seen no negotiation with this counterpart, warm = at least 10
-        for key in ("w_mae", "u_mae"):
+        for key in ("w_mae", "u_mae", "rank"):
             s[f"{key}_cold"] = mean([r for r in learned if r["n_seen"] == 0], key)
             s[f"{key}_warm"] = mean([r for r in learned if r["n_seen"] >= 10], key)
+    if stats:
+        g_true, g_false = np.array(stats["g_true"]), np.array(stats["g_false"])
+        s["extraction_f1"] = f1(stats["tp"], stats["fp"], stats["fn"])
+        s["false_admission_rate"] = float((g_false > ADMIT).mean()) if len(g_false) else nan
+        s["true_admission_rate"] = float((g_true > ADMIT).mean()) if len(g_true) else nan
+        s["gate_true"] = float(g_true.mean()) if len(g_true) else nan
+        s["gate_false"] = float(g_false.mean()) if len(g_false) else nan
     return s

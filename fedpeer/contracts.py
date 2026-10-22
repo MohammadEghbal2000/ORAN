@@ -10,6 +10,7 @@ K_GRID = np.arange(0, 22, 2)      # internal credits paid by receiver R to donor
 
 X = np.array(list(itertools.product(Q_GRID, D_GRID, K_GRID)), dtype=float)  # (M, 3) raw contracts
 XN = (X - X.min(0)) / (X.max(0) - X.min(0))                                 # per-issue normalized to [0, 1]
+ISSUES = ("q", "d", "kappa")  # column order of X
 ROLES = ("R", "D")
 HETEROGENEITY = ("iid", "clustered", "severe")
 

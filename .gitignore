@@ -1,4 +1,5 @@
 results/
+.llm_cache/
 __pycache__/
 .pytest_cache/
 .venv/
