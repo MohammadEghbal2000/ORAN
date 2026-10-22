@@ -8,10 +8,21 @@ from pathlib import Path
 
 from .contracts import HETEROGENEITY
 from .evidence import PROFILES
+from .federation import RULES
 from .simulator import METHODS, Config, run
 
-COLUMNS = ("method", "seed", "evidence", "agreement_rate", "timeout_rate", "fallback_rate", "welfare", "nash_gap",
-           "sla_satisfaction", "w_mae_warm", "rank_warm", "extraction_f1", "false_admission_rate", "seconds")
+COLUMNS = ("method", "seed", "heterogeneity", "evidence", "agreement_rate", "welfare", "sla_satisfaction",
+           "w_mae_cold", "w_mae_mean", "rank_mean", "brier_mean", "transfer_gain", "w_mae_honest_cp", "seconds")
+
+
+def _add_transfer_gain(summaries):
+    """Eq. 19 against the local-only B3 of the same seed: held-out Brier loss and weight error (> 0 = transfer helps)."""
+    local = {s["seed"]: s for s in summaries if s["method"] == "B3"}
+    for s in summaries:
+        if s["seed"] in local and "brier_mean" in s:
+            s["transfer_gain"] = local[s["seed"]]["brier_mean"] - s["brier_mean"]
+            s["transfer_gain_w_mae"] = local[s["seed"]]["w_mae_mean"] - s["w_mae_mean"]
+            s["transfer_gain_cold_w_mae"] = local[s["seed"]]["w_mae_cold"] - s["w_mae_cold"]
 
 
 def _write_csv(path, rows):
@@ -37,6 +48,11 @@ def main(argv=None):
     p.add_argument("--extractor", default="mock", choices=("mock", "llm"))
     p.add_argument("--llm-model", default="gpt-4.1-nano")
     p.add_argument("--base-url", default=None)
+    p.add_argument("--aggregation", default="reliability", choices=RULES)
+    p.add_argument("--no-personalize", action="store_true")
+    p.add_argument("--no-pooled-reputation", action="store_true")
+    p.add_argument("--mu", type=float, default=10.0)
+    p.add_argument("--sync-epochs", type=int, default=4)
     p.add_argument("--out", default="results/run")
     a = p.parse_args(argv)
     out = Path(a.out)
@@ -49,12 +65,15 @@ def main(argv=None):
                          heterogeneity=a.heterogeneity, seed=seed, evidence=a.evidence,
                          adversary_frac=a.adversary_frac, language=not a.no_language,
                          verification=not a.no_verification, extractor=a.extractor,
-                         llm_model=a.llm_model, base_url=a.base_url)
+                         llm_model=a.llm_model, base_url=a.base_url, aggregation=a.aggregation,
+                         personalize=not a.no_personalize, pooled_reputation=not a.no_pooled_reputation,
+                         mu=a.mu, sync_epochs=a.sync_epochs)
             t0 = time.perf_counter()
             res = run(cfg)
             _write_csv(out / f"{m}_seed{seed}_negotiations.csv", res["negotiations"])
             _write_csv(out / f"{m}_seed{seed}_sla.csv", res["sla"])
             summaries.append({**asdict(cfg), **res["summary"], "seconds": time.perf_counter() - t0})
+    _add_transfer_gain(summaries)
     (out / "summary.json").write_text(json.dumps(summaries, indent=2))
 
     print(" ".join(f"{c[:12]:>12}" for c in COLUMNS))

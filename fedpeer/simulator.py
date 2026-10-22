@@ -1,5 +1,6 @@
-"""Multi-cell epoch loop (proposal Sec. 8, Steps 1-7) for B0 static slicing, B1 full-information
-Nash mediator, B2 offers-only local peer models and B3 = B2 + gated language with verified reputation."""
+"""Multi-cell epoch loop (proposal Sec. 8, Steps 1-8): B0 static slicing, B1 full-information Nash mediator,
+B2 offers-only local peer models, B3 = B2 + gated language with verified reputation, B4 = B3 + FedAvg and
+P = B3 + pair-specific reliability-aware federation + personalization + pooled verified reputation."""
 from dataclasses import dataclass
 
 import numpy as np
@@ -7,12 +8,15 @@ import numpy as np
 from .bargaining import benchmarks
 from .contracts import Q_GRID, X, sample_preferences
 from .evidence import ADMIT, MockExtractor, compose, consistency, f1, gate, is_true, match_counts
+from .federation import aggregate, personalize
 from .negotiation import Negotiator, negotiate
 from .network import STATIC_SHARE, TENANTS, Ledger, demand_traces
 from .peer_model import PeerModel
 from .reputation import BetaReputation, verify
 
-METHODS = ("B0", "B1", "B2", "B3")
+METHODS = ("B0", "B1", "B2", "B3", "B4", "P")
+LANGUAGE = ("B3", "B4", "P")
+FEDERATED = ("B4", "P")
 BILATERAL = ("agreement", "timeout", "no_agreement")
 
 
@@ -38,6 +42,12 @@ class Config:
     extract_noise: float = 0.05
     llm_model: str = "gpt-4.1-nano"
     base_url: str | None = None  # e.g. http://localhost:11434/v1 for Ollama
+    # P federation (B4 always uses FedAvg, no personalization, per-cell reputation)
+    aggregation: str = "reliability"  # "reliability" | "fedavg" | "median"
+    personalize: bool = True
+    pooled_reputation: bool = True
+    mu: float = 10.0                  # eq. 17 cold-start hyperparameter
+    sync_epochs: int = 4              # 60 min at 15-min epochs
 
 
 def _alloc(static, active, n):
@@ -79,13 +89,40 @@ def run(cfg):
     lang_rng = np.random.default_rng([cfg.seed, 1])  # own stream, so traces and preferences stay matched
     profiles = {(s, n): cfg.evidence if lang_rng.random() < cfg.adversary_frac else "honest"
                 for s in range(n_t) for n in range(cfg.n_cells)}
-    if cfg.method == "B3" and cfg.extractor == "llm":
+    if cfg.method in LANGUAGE and cfg.extractor == "llm":
         from .llm import LLMExtractor
         extractor = LLMExtractor(cfg.llm_model, cfg.base_url)
     else:
         extractor = MockExtractor(np.random.default_rng([cfg.seed, 2]), cfg.extract_noise)
     rep, pending, said = BetaReputation(), [], {}
-    stats = {"tp": 0, "fp": 0, "fn": 0, "g_true": [], "g_false": []}
+    stats = {"tp": 0, "fp": 0, "fn": 0, "g_true": [], "g_false": [], "fl_bytes": 0, "syncs": 0}
+
+    rule = "fedavg" if cfg.method == "B4" else cfg.aggregation
+    personal = cfg.method == "P" and cfg.personalize
+    pooled = cfg.method == "P" and cfg.pooled_reputation
+    fed = {}  # (owner tenant s, counterpart s') -> latest global theta of that tenant's aggregator
+
+    def peer(n, s, sp):
+        """Persistent model of s' held by tenant s in cell n; a new one starts from s's federated model if any."""
+        if (n, s, sp) not in peers:
+            peers[n, s, sp] = PeerModel()
+            if cfg.method in FEDERATED and (s, sp) in fed:
+                peers[n, s, sp].load(fed[s, sp])  # D_n = 0, so beta = 1: pure transfer at cold start
+        return peers[n, s, sp]
+
+    def sync():
+        """Method step 8: each tenant aggregates its own agents' models of one counterpart across cells."""
+        for s, sp in {(s, sp) for _, s, sp in peers}:
+            members = [peers[n, s, sp] for n in range(cfg.n_cells)
+                       if (n, s, sp) in peers and peers[n, s, sp].n_negotiations > 0]
+            if not members:
+                continue
+            fed[s, sp] = aggregate([m.theta for m in members], [m.n_negotiations for m in members],
+                                   [m.reliability_mass for m in members], rule)
+            for m in members:
+                m.load(personalize(fed[s, sp], m.theta, m.n_negotiations, cfg.mu) if personal else fed[s, sp])
+            stats["fl_bytes"] += 2 * len(members) * fed[s, sp].nbytes  # upload + download
+        stats["syncs"] += 1
 
     def converse(hist, R, D, n, t):
         """A message rides with every offer (Method step 4); returns the gated preference claims each side learns."""
@@ -108,7 +145,9 @@ def run(cfg):
                     continue
                 history = said.setdefault((n, obs, snd), [])
                 # a = 1: preference claims are not verifiable now (neutral, not "true")
-                g = gate(ev.c, ev.v, consistency(ev.claim, history), 1.0, rep.score((n, obs, snd)))
+                # shortcut: pooled reputation is read live, not only at sync epochs; upgrade if transport delay matters
+                r = rep.pooled(obs, snd) if pooled else rep.score((n, obs, snd))
+                g = gate(ev.c, ev.v, consistency(ev.claim, history), 1.0, r)
                 history.append(ev.claim)
                 stats["g_true" if is_true(ev.claim, prefs[snd, n], role) else "g_false"].append(g)
                 if cfg.language:
@@ -121,6 +160,8 @@ def run(cfg):
             for due, n, obs, snd, claimed, eid in [p for p in pending if p[0] <= t]:
                 rep.update((n, obs, snd), verify(claimed, need[n, snd, due]), eid)
         pending[:] = [p for p in pending if p[0] > t]
+        if cfg.method in FEDERATED and t > 0 and t % cfg.sync_epochs == 0:
+            sync()
         for n in range(cfg.n_cells):
             nd = need[n, :, t]
             b, _ = _alloc(static, active, n)
@@ -159,20 +200,22 @@ def run(cfg):
                         negs.append({**base, "outcome": "no_agreement", "rounds": 0, "fir_empty": True})
                 else:
                     uR, rR = prefs[R, n].utility("R"), prefs[R, n].r["R"]
-                    models = {D: (peers.setdefault((n, R, D), PeerModel()), peers.setdefault((n, D, R), PeerModel()))
-                              for D in donors}
+                    models = {D: (peer(n, R, D), peer(n, D, R)) for D in donors}
                     # receiver's own view only: estimated acceptance times its own surplus
                     score = {D: np.where(feas[D], models[D][0].p_accept("D") * np.maximum(uR - rR, 0), 0).max()
                              for D in donors}
                     for D in sorted(donors, key=score.get, reverse=True):
                         m_rd, m_dr = models[D]
                         err = {"w_mae": m_rd.weight_mae(prefs[D, n].w), "u_mae": m_rd.utility_mae(prefs[D, n], "D"),
-                               "rank": m_rd.rank_agreement(prefs[D, n].w), "n_seen": m_rd.n_negotiations}
+                               "rank": m_rd.rank_agreement(prefs[D, n].w), "n_seen": m_rd.n_negotiations,
+                               "counterpart_profile": profiles[D, n]}
                         outcome, idx, rounds, hist = negotiate(
                             Negotiator(uR, rR, "R", m_rd.utility("D"), cfg.lam),
                             Negotiator(prefs[D, n].utility("D"), prefs[D, n].r["D"], "D", m_dr.utility("R"), cfg.lam),
                             feas[D], cfg.t_max)
-                        learn = converse(hist, R, D, n, t) if cfg.method == "B3" else {R: (), D: ()}
+                        if hist:  # held-out: scored before the model sees this negotiation
+                            err["brier"] = m_rd.brier(hist, "D", outcome == "agreement")
+                        learn = converse(hist, R, D, n, t) if cfg.method in LANGUAGE else {R: (), D: ()}
                         m_rd.observe(hist, "D", outcome == "agreement", learn[R])
                         m_dr.observe(hist, "R", outcome == "agreement", learn[D])
                         negs.append({**base, "donor": TENANTS[D], "donor_slack": slack[D], "outcome": outcome,
@@ -197,7 +240,7 @@ def run(cfg):
             sla += [{"t": t, "cell": n, "tenant": TENANTS[s], "need": nd[s], "alloc": b[s]} for s in range(n_t)]
 
     return {"negotiations": negs, "sla": sla, "credit_total": float(ledger.balance.sum()),
-            "summary": summarize(negs, sla, cfg.budget, stats if cfg.method == "B3" else None)}
+            "summary": summarize(negs, sla, cfg.budget, stats if cfg.method in LANGUAGE else None)}
 
 
 def summarize(negs, sla, budget, stats=None):
@@ -227,9 +270,14 @@ def summarize(negs, sla, budget, stats=None):
         s[f"sla_{name}"] = float(ok[[r["tenant"] == name for r in sla]].mean())
     learned = [r for r in bil if "w_mae" in r]
     if learned:  # cold = model has seen no negotiation with this counterpart, warm = at least 10
-        for key in ("w_mae", "u_mae", "rank"):
-            s[f"{key}_cold"] = mean([r for r in learned if r["n_seen"] == 0], key)
-            s[f"{key}_warm"] = mean([r for r in learned if r["n_seen"] >= 10], key)
+        for key in ("w_mae", "u_mae", "rank", "brier"):
+            rows = [r for r in learned if key in r]
+            s[f"{key}_mean"] = mean(rows, key)
+            s[f"{key}_cold"] = mean([r for r in rows if r["n_seen"] == 0], key)
+            s[f"{key}_warm"] = mean([r for r in rows if r["n_seen"] >= 10], key)
+        # H2: error on models of honest counterparts shows contamination spreading from adversarial ones
+        s["w_mae_honest_cp"] = mean([r for r in learned if r["counterpart_profile"] == "honest"], "w_mae")
+        s["w_mae_adversarial_cp"] = mean([r for r in learned if r["counterpart_profile"] != "honest"], "w_mae")
     if stats:
         g_true, g_false = np.array(stats["g_true"]), np.array(stats["g_false"])
         s["extraction_f1"] = f1(stats["tp"], stats["fp"], stats["fn"])
@@ -237,4 +285,5 @@ def summarize(negs, sla, budget, stats=None):
         s["true_admission_rate"] = float((g_true > ADMIT).mean()) if len(g_true) else nan
         s["gate_true"] = float(g_true.mean()) if len(g_true) else nan
         s["gate_false"] = float(g_false.mean()) if len(g_false) else nan
+        s["fl_bytes"], s["syncs"] = stats["fl_bytes"], stats["syncs"]
     return s

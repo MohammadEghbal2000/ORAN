@@ -27,7 +27,7 @@ class PeerModel:
 
     def __init__(self, prior_strength=1.0, concession_weight=5.0, language_weight=20.0, margin=0.05,
                  lr=0.05, steps=30, window=400):
-        self.z = Z0.copy()
+        self.z, self.z0 = Z0.copy(), Z0.copy()  # z0: the prior the fit is regularized toward (federated after sync)
         self.prior_strength, self.concession_weight = prior_strength, concession_weight
         self.language_weight, self.margin = language_weight, margin
         self.lr, self.steps, self.window = lr, steps, window
@@ -36,12 +36,32 @@ class PeerModel:
         # distinct preference claim -> (claim, counterpart role, latest gate g); a repeated claim is not new evidence,
         # otherwise a consistent liar outweighs any small gate by repetition alone
         self.language = {}
-        self.n_negotiations = 0  # D_n, the local evidence count used later by federation
+        self.n_negotiations = 0      # D_n, the local evidence count (FedAvg weight)
+        self.reliability_mass = 0.0  # G_n = sum of gates over received language evidence (eq. 15)
 
     @staticmethod
     def unpack(z):
         w = np.exp(z[:3]) / np.exp(z[:3]).sum()
         return w, np.exp(z[3:6]), _sigmoid(z[6:8]), np.exp(z[8])
+
+    @property
+    def theta(self):
+        """Schema-aligned record shared with the tenant aggregator: [w (3), gamma (3), r (R, D), tau]."""
+        w, g, r, tau = self.unpack(self.z)
+        return np.concatenate([w, g, r, [tau]])
+
+    def load(self, theta):
+        """Adopt a (personalized) federated theta as estimate and as the prior for later local fits."""
+        w = np.clip(theta[:3], 1e-6, None)
+        r = np.clip(theta[6:8], 1e-6, 1 - 1e-6)
+        self.z = np.concatenate([np.log(w / w.sum()), np.log(theta[3:6]), np.log(r / (1 - r)), [np.log(theta[8])]])
+        self.z0 = self.z.copy()
+
+    @staticmethod
+    def labels(history, counterpart_role, agreed):
+        """(contract index, 1 if the counterpart would accept): their offers and an accepted offer of ours -> 1."""
+        last = len(history) - 1
+        return [(i, 1.0 if p == counterpart_role or (agreed and k == last) else 0.0) for k, (p, i) in enumerate(history)]
 
     def utility(self, role):
         w, g, _, _ = self.unpack(self.z)
@@ -57,12 +77,11 @@ class PeerModel:
 
         shortcut: refit once per negotiation, not per message; upgrade if within-negotiation adaptation matters.
         """
-        last = len(history) - 1
-        for k, (p, i) in enumerate(history):
-            self.obs.append((i, counterpart_role, 1.0 if p == counterpart_role or (agreed and k == last) else 0.0))
+        self.obs += [(i, counterpart_role, y) for i, y in self.labels(history, counterpart_role, agreed)]
         theirs = [i for p, i in history if p == counterpart_role]
         self.concessions += [(a, b, counterpart_role) for a, b in zip(theirs, theirs[1:])]
         self.language.update({(c.key(), role): (c, role, g) for c, role, g in language})
+        self.reliability_mass += sum(g for _, _, g in language)
         self.obs, self.concessions = self.obs[-self.window:], self.concessions[-self.window:]
         self.n_negotiations += 1
         self._fit()
@@ -86,7 +105,7 @@ class PeerModel:
 
     def _loss(self, z, data, lang):
         w, g, r, tau = self.unpack(z)
-        total = self.prior_strength * np.sum((z - Z0) ** 2)
+        total = self.prior_strength * np.sum((z - self.z0) ** 2)
         for k, xo, y, xa, xb in data:
             p = np.clip(_sigmoid(((w * xo ** g).sum(1) - r[k]) / tau), 1e-6, 1 - 1e-6)
             total -= np.sum(y * np.log(p) + (1 - y) * np.log(1 - p))
@@ -117,3 +136,8 @@ class PeerModel:
 
     def utility_mae(self, true_prefs, role):
         return float(np.abs(self.utility(role) - true_prefs.utility(role)).mean())
+
+    def brier(self, history, counterpart_role, agreed):
+        """Held-out acceptance Brier score on a negotiation not yet observed (no ground truth needed)."""
+        p = self.p_accept(counterpart_role)
+        return float(np.mean([(p[i] - y) ** 2 for i, y in self.labels(history, counterpart_role, agreed)]))

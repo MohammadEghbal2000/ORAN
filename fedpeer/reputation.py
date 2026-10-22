@@ -26,3 +26,9 @@ class BetaReputation:
     def score(self, key):
         a, b = self.counts.get(key, (0.0, 0.0))
         return (1 + a) / (2 + a + b)
+
+    def pooled(self, observer, counterpart):
+        """Cross-cell aggregated reputation (eq. 18): counts summed over cells, prior counted once."""
+        ab = [v for (_, o, c), v in self.counts.items() if (o, c) == (observer, counterpart)]
+        a, b = sum(x for x, _ in ab), sum(y for _, y in ab)
+        return (1 + a) / (2 + a + b)
