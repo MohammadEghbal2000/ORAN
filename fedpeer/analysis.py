@@ -151,6 +151,7 @@ def _bars(ax, groups, methods, value, ylabel):
             ax.text(x, (hi if not np.isnan(hi) else v.mean()) * 1.01, f"{v.mean():.3f}", ha="center", va="bottom",
                     fontsize=6.5, color=MUTED, rotation=90)
     ax.set_xticks(range(len(groups)), groups)
+    ax.margins(y=0.15)  # headroom so value labels clear the panel title
     _style(ax, ylabel)
 
 
@@ -178,13 +179,19 @@ def figures(runs, out):
 
     fig, axes = plt.subplots(1, 3, figsize=(11, 3.2), sharey=True)
     for ax, h in zip(axes, HETEROGENEITY):
+        ends = []
         for m in learners:
             curves = np.array([r["curve_w_mae"] for r in select(runs, method=m, heterogeneity=h).values()], float)
             if not len(curves):
                 continue
             y = np.nanmean(curves, 0)
             ax.plot(range(len(y)), y, color=COLORS[m], linewidth=2, label=m)
-            ax.text(len(y) - 0.7, y[-1], m, color=INK, fontsize=7, va="center")
+            ends.append([y[-1], m])
+        placed = -np.inf
+        for yv, m in sorted(ends):  # bottom-up, each end label at least 0.006 above the previous one
+            placed = max(yv, placed + 0.006)
+            ax.text(len(y) - 0.6, placed, m, color=INK, fontsize=7, va="center")
+        ax.set_xticks(range(0, 16, 3))
         ax.set_title(h, color=INK, loc="left")
         ax.set_xlabel("negotiations already seen with this counterpart", color=MUTED)
         _style(ax, "weight MAE" if h == "iid" else "")
@@ -198,8 +205,9 @@ def figures(runs, out):
     for ax, frac in zip(axes, (0.1, 0.3)):
         _bars(ax, REGIMES, ("B3", "B4", "P"), lambda g, m: _as_x(
             select(runs, method=m, heterogeneity="iid", evidence=g, adversary_frac=frac), "w_mae_honest_cp"),
-              f"weight MAE on honest counterparts, {frac:.0%} adversarial")
-    axes[0].legend(frameon=False, ncol=3, loc="lower left", bbox_to_anchor=(0, 1.02))
+              "weight MAE, honest counterparts" if frac == 0.1 else "")
+        ax.set_title(f"{frac:.0%} adversarial agents", color=INK, loc="left")
+    axes[0].legend(frameon=False, ncol=3, loc="lower left", bbox_to_anchor=(0, 1.1))
     fig.suptitle("E2 · contamination of models of honest counterparts (lower is better)", x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(out / "fig3_e2_contamination.png")
