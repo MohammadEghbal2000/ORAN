@@ -18,6 +18,7 @@ METHODS = ("B0", "B1", "B2", "B3", "B4", "P")
 LANGUAGE = ("B3", "B4", "P")
 FEDERATED = ("B4", "P")
 BILATERAL = ("agreement", "timeout", "no_agreement")
+TARGET_W_MAE = 0.10  # pre-chosen accuracy target for time-to-target (fixed before WP4 runs)
 
 
 @dataclass
@@ -48,6 +49,7 @@ class Config:
     pooled_reputation: bool = True
     mu: float = 10.0                  # eq. 17 cold-start hyperparameter
     sync_epochs: int = 4              # 60 min at 15-min epochs
+    late_join_frac: float = 0.0       # share of cells whose agents only start negotiating at mid-horizon
 
 
 def _alloc(static, active, n):
@@ -68,10 +70,16 @@ def _evaluate(pR, pD, feasible, idx):
     rec = {"fir_empty": bm["fir_empty"]}
     if idx is not None:
         q, d, k = X[idx]
-        rec.update(q=q, d=d, kappa=k, u_r=uR[idx], u_d=uD[idx], surplus_r=uR[idx] - pR.r["R"],
-                   surplus_d=uD[idx] - pD.r["D"], welfare=uR[idx] + uD[idx],
-                   nash_gap=bm["nash_gap"], pareto_dist=bm["pareto_dist"])
+        sr, sd = uR[idx] - pR.r["R"], uD[idx] - pD.r["D"]
+        rec.update(q=q, d=d, kappa=k, u_r=uR[idx], u_d=uD[idx], surplus_r=sr, surplus_d=sd,
+                   welfare=uR[idx] + uD[idx], nash_gap=bm["nash_gap"], pareto_dist=bm["pareto_dist"],
+                   jain=(sr + sd) ** 2 / (2 * (sr ** 2 + sd ** 2)) if sr + sd > 0 else float("nan"))  # Jain on surplus
     return rec
+
+
+def leakage(est_w, true_w):
+    """Eq. 20: 1 - MAE(estimate) / MAE(uniform prior); 1 = exact recovery, may be negative."""
+    return 1 - np.abs(est_w - true_w).mean() / np.abs(1 / 3 - true_w).mean()
 
 
 def run(cfg):
@@ -94,8 +102,10 @@ def run(cfg):
         extractor = LLMExtractor(cfg.llm_model, cfg.base_url)
     else:
         extractor = MockExtractor(np.random.default_rng([cfg.seed, 2]), cfg.extract_noise)
+    join_rng = np.random.default_rng([cfg.seed, 3])
+    join_t = np.where(join_rng.random(cfg.n_cells) < cfg.late_join_frac, cfg.n_epochs // 2, 0)  # static until then
     rep, pending, said = BetaReputation(), [], {}
-    stats = {"tp": 0, "fp": 0, "fn": 0, "g_true": [], "g_false": [], "fl_bytes": 0, "syncs": 0}
+    stats = {"tp": 0, "fp": 0, "fn": 0, "g_true": [], "g_false": [], "fl_bytes": 0, "syncs": 0, "messages": 0}
 
     rule = "fedavg" if cfg.method == "B4" else cfg.aggregation
     personal = cfg.method == "P" and cfg.personalize
@@ -134,6 +144,7 @@ def run(cfg):
             msg = compose(lang_rng, prof, prefs[snd, n], role, need[n, snd, min(t + 1, cfg.n_epochs - 1)],
                           snd, n, t, f"{t}:{n}:{R}:{D}:{k}", lying)
             evs = extractor(msg)
+            stats["messages"] += 1
             for key, x in zip(("tp", "fp", "fn"), match_counts(msg.claims, evs)):
                 stats[key] += x
             for ev in evs:
@@ -165,13 +176,14 @@ def run(cfg):
         for n in range(cfg.n_cells):
             nd = need[n, :, t]
             b, _ = _alloc(static, active, n)
-            for R in np.argsort(-nd / np.maximum(b, 1e-9)):  # a donor may have lent its whole share
+            order = np.argsort(-nd / np.maximum(b, 1e-9)) if t >= join_t[n] else []  # a donor may have lent its share
+            for R in order:
                 b, out = _alloc(static, active, n)
                 if nd[R] <= cfg.risk_threshold * b[R]:
                     continue
                 slack = np.minimum(b - nd, static - out)  # no re-donating borrowed PRBs; keeps b >= 0
                 donors = [D for D in range(n_t) if D != R and slack[D] >= Q_GRID[0]]
-                base = {"t": t, "cell": n, "regime": regimes[n], "receiver": TENANTS[R]}
+                base = {"t": t, "cell": n, "regime": regimes[n], "receiver": TENANTS[R], "late": bool(join_t[n])}
                 if cfg.method == "B0":
                     negs.append({**base, "outcome": "static"})
                     continue
@@ -208,6 +220,7 @@ def run(cfg):
                         m_rd, m_dr = models[D]
                         err = {"w_mae": m_rd.weight_mae(prefs[D, n].w), "u_mae": m_rd.utility_mae(prefs[D, n], "D"),
                                "rank": m_rd.rank_agreement(prefs[D, n].w), "n_seen": m_rd.n_negotiations,
+                               "leak": leakage(m_rd.theta[:3], prefs[D, n].w),  # opponent as observer
                                "counterpart_profile": profiles[D, n]}
                         outcome, idx, rounds, hist = negotiate(
                             Negotiator(uR, rR, "R", m_rd.utility("D"), cfg.lam),
@@ -239,6 +252,9 @@ def run(cfg):
             assert (b >= -1e-9).all() and b.sum() <= cfg.budget + 1e-9, "PRB budget or non-negativity violated"
             sla += [{"t": t, "cell": n, "tenant": TENANTS[s], "need": nd[s], "alloc": b[s]} for s in range(n_t)]
 
+    # same-tenant aggregator as observer: what its global theta reveals about the counterpart in each cell
+    stats["leak_aggregator"] = [leakage(th[:3], prefs[sp, n].w) for (s, sp), th in fed.items()
+                                for n in range(cfg.n_cells) if (n, s, sp) in peers]
     return {"negotiations": negs, "sla": sla, "credit_total": float(ledger.balance.sum()),
             "summary": summarize(negs, sla, cfg.budget, stats if cfg.method in LANGUAGE else None)}
 
@@ -264,17 +280,29 @@ def summarize(negs, sla, budget, stats=None):
          "fallback_rate": sum(r["outcome"] == "fallback" for r in negs) / triggers if triggers else nan,
          "rounds_agreed": mean(agr, "rounds"), "welfare": mean(agr, "welfare"),
          "nash_gap": mean(agr, "nash_gap"), "pareto_dist": mean(agr, "pareto_dist"),
+         "jain": float(np.nanmean([r["jain"] for r in agr])) if agr else nan,
+         "surplus_r": mean(agr, "surplus_r"), "surplus_d": mean(agr, "surplus_d"),
          "sla_satisfaction": float(ok.mean()),
          "utilization": float(np.minimum(alloc, need).sum() / (budget * len(sla) / len(TENANTS)))}
     for name in TENANTS:
         s[f"sla_{name}"] = float(ok[[r["tenant"] == name for r in sla]].mean())
     learned = [r for r in bil if "w_mae" in r]
     if learned:  # cold = model has seen no negotiation with this counterpart, warm = at least 10
-        for key in ("w_mae", "u_mae", "rank", "brier"):
+        for key in ("w_mae", "u_mae", "rank", "brier", "leak"):
             rows = [r for r in learned if key in r]
             s[f"{key}_mean"] = mean(rows, key)
             s[f"{key}_cold"] = mean([r for r in rows if r["n_seen"] == 0], key)
             s[f"{key}_warm"] = mean([r for r in rows if r["n_seen"] >= 10], key)
+        s["w_mae_cold_late"] = mean([r for r in learned if r["n_seen"] == 0 and r["late"]], "w_mae")
+        s["curve_w_mae"] = [mean([r for r in learned if r["n_seen"] == k], "w_mae") for k in range(16)]
+        # time to the pre-chosen accuracy target, per persistent model (cell, receiver, donor)
+        seqs = {}
+        for r in learned:
+            seqs.setdefault((r["cell"], r["receiver"], r["donor"]), []).append((r["n_seen"], r["w_mae"]))
+        hits = [min((k for k, e in seq if e <= TARGET_W_MAE), default=None) for seq in seqs.values()]
+        reached = [h for h in hits if h is not None]
+        s["target_reached"] = len(reached) / len(hits)
+        s["time_to_target"] = float(np.median(reached)) if reached else nan
         # H2: error on models of honest counterparts shows contamination spreading from adversarial ones
         s["w_mae_honest_cp"] = mean([r for r in learned if r["counterpart_profile"] == "honest"], "w_mae")
         s["w_mae_adversarial_cp"] = mean([r for r in learned if r["counterpart_profile"] != "honest"], "w_mae")
@@ -285,5 +313,7 @@ def summarize(negs, sla, budget, stats=None):
         s["true_admission_rate"] = float((g_true > ADMIT).mean()) if len(g_true) else nan
         s["gate_true"] = float(g_true.mean()) if len(g_true) else nan
         s["gate_false"] = float(g_false.mean()) if len(g_false) else nan
-        s["fl_bytes"], s["syncs"] = stats["fl_bytes"], stats["syncs"]
+        s["fl_bytes"], s["syncs"], s["messages"] = stats["fl_bytes"], stats["syncs"], stats["messages"]
+        la = stats.get("leak_aggregator", [])
+        s["leak_aggregator"] = float(np.mean(la)) if la else nan
     return s
