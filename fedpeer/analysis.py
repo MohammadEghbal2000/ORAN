@@ -4,22 +4,28 @@ import argparse
 import itertools
 import json
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
 from .contracts import HETEROGENEITY
+from .simulator import Config
+
+DEFAULTS = asdict(Config())  # runs logged before a field existed are read with that field's default
 
 NAN = float("nan")
 # validated categorical slots in fixed order (dataviz validator: CVD and normal-vision PASS; contrast WARN, so every
 # chart carries direct labels and a table)
-COLORS = {"B0": "#2a78d6", "B1": "#eb6834", "B2": "#1baf7a", "B3": "#eda100", "B4": "#e87ba4", "P": "#008300"}
+COLORS = {"B0": "#2a78d6", "B1": "#eb6834", "B2": "#1baf7a", "B3": "#eda100", "B4": "#e87ba4", "P": "#008300",
+          "P*": "#9ec5a0"}  # P* = a P variant: same hue family as P, always direct-labelled
+LABELS = {"P*": "P, per-cell reputation"}
 INK, MUTED, GRID = "#1f1f1e", "#6b6b68", "#e4e4e0"
 LOWER_BETTER = {"w_mae_mean", "w_mae_cold", "brier_mean", "w_mae_cold_late", "time_to_target", "w_mae_honest_cp",
                 "w_mae_adversarial_cp", "gate_false", "false_admission_rate", "timeout_rate", "nash_gap"}
-BASE = dict(n_cells=10, n_epochs=96, t_max=10, evidence="honest", adversary_frac=0.3, language=True,
-            verification=True, aggregation="reliability", personalize=True, pooled_reputation=True, mu=10.0,
-            sync_epochs=4, late_join_frac=0.0, lam=0.7)
+BASE = dict(n_cells=10, n_epochs=96, t_max=10, evidence="honest", adversary_frac=0.3, adversary_unit="agent",
+            language=True, verification=True, aggregation="reliability", personalize=True, pooled_reputation=True,
+            mu=10.0, sync_epochs=4, late_join_frac=0.0, lam=0.7)
 REGIMES = ("noise", "contradictory", "strategic_lie", "rep_then_lie")
 LIE = dict(heterogeneity="iid", evidence="strategic_lie", adversary_frac=0.3)
 
@@ -27,7 +33,15 @@ LIE = dict(heterogeneity="iid", evidence="strategic_lie", adversary_frac=0.3)
 def select(runs, **kw):
     """Runs of the base configuration overridden by kw, keyed by seed."""
     want = {**BASE, **kw}
-    return {r["seed"]: r for r in runs if all(r.get(k) == v for k, v in want.items())}
+    return {r["seed"]: r for r in runs if all(r.get(k, DEFAULTS[k]) == v for k, v in want.items())}
+
+
+def tenant_level(**kw):
+    """Selector kwargs for amendment 1 (E7); method "P*" means P with per-cell reputation."""
+    def sel(runs, method):
+        extra = {"method": "P", "pooled_reputation": False} if method == "P*" else {"method": method}
+        return select(runs, heterogeneity="iid", adversary_unit="tenant", **kw, **extra)
+    return sel
 
 
 def _vals(sel, metric):
@@ -95,6 +109,15 @@ def families(runs):
                 fam["F2 robustness, E2"].append(
                     (f"{ev} {frac:.0%}", "w_mae_honest_cp", base, compare(P, select(runs, method=base, **kw),
                                                                           "w_mae_honest_cp")))
+    if any(r.get("adversary_unit") == "tenant" for r in runs):
+        rows = fam["F4 tenant-level adversaries, amendment 1"] = []
+        for ev in REGIMES:
+            sel = tenant_level(evidence=ev)
+            P = sel(runs, "P")
+            for m in ("w_mae_adversarial_cp", "gate_false"):
+                rows.append((ev, m, "P per-cell rep.", compare(P, sel(runs, "P*"), m)))
+            for base in ("B4", "B3"):
+                rows.append((ev, "w_mae_adversarial_cp", base, compare(P, sel(runs, base), "w_mae_adversarial_cp")))
     for rows in fam.values():
         for row, adj in zip(rows, holm([r[3]["p"] for r in rows])):
             row[3]["p_holm"] = float(adj)
@@ -144,8 +167,8 @@ def _bars(ax, groups, methods, value, ylabel):
                 continue
             lo, hi = boot_ci(v, rng)
             x = i + (j - (len(methods) - 1) / 2) * width
-            ax.bar(x, v.mean(), width * 0.92, color=COLORS[m], label=m if i == 0 else None, edgecolor="white",
-                   linewidth=1)
+            ax.bar(x, v.mean(), width * 0.92, color=COLORS[m], label=LABELS.get(m, m) if i == 0 else None,
+                   edgecolor="white", linewidth=1)
             if not np.isnan(lo):
                 ax.errorbar(x, v.mean(), [[v.mean() - lo], [hi - v.mean()]], color=INK, linewidth=1, capsize=2)
             ax.text(x, (hi if not np.isnan(hi) else v.mean()) * 1.01, f"{v.mean():.3f}", ha="center", va="bottom",
@@ -237,6 +260,18 @@ def figures(runs, out):
     fig.savefig(out / "fig4_e5_ablation.png")
     plt.close(fig)
 
+    if any(r.get("adversary_unit") == "tenant" for r in runs):
+        fig, axes = plt.subplots(1, 2, figsize=(11, 3.4))
+        for ax, (metric, label) in zip(axes, (("w_mae_adversarial_cp", "weight MAE, models of the deceiving tenant"),
+                                              ("gate_false", "mean gate on false claims"))):
+            _bars(ax, REGIMES, ("B3", "B4", "P", "P*"),
+                  lambda g, m: _as_x(tenant_level(evidence=g)(runs, m), metric), label)
+        axes[0].legend(frameon=False, ncol=4, loc="lower left", bbox_to_anchor=(0, 1.02))
+        fig.suptitle("E7 · one tenant deceives in every cell (amendment 1; lower is better)", x=0.01, ha="left")
+        fig.tight_layout()
+        fig.savefig(out / "fig5_e7_tenant_level.png")
+        plt.close(fig)
+
 
 def report(runs, out):
     rng = np.random.default_rng(0)
@@ -302,6 +337,24 @@ def report(runs, out):
                                   ("pooled_reputation", False), ("language", False), ("verification", False))],
                     ["w_mae_honest_cp", "w_mae_mean", "rank_mean", "gate_false", "welfare"], rng), ""]
 
+    if any(r.get("adversary_unit") == "tenant" for r in runs):
+        lines += ["## E7 · tenant-level adversaries (amendment 1, iid)", "",
+                  "One tenant uses the regime in every cell. `P*` = P with per-cell instead of pooled reputation.", "",
+                  "![E7 tenant level](fig5_e7_tenant_level.png)", ""]
+        for ev in REGIMES:
+            sel = tenant_level(evidence=ev)
+            lines += [f"**{ev}**", "", table([(m, sel(runs, m)) for m in ("B3", "B4", "P", "P*")],
+                                             ["w_mae_adversarial_cp", "w_mae_honest_cp", "gate_true", "gate_false",
+                                              "rank_mean", "welfare"], rng), ""]
+        sel = tenant_level(evidence="strategic_lie")
+        lines += ["**Ablations of P, strategic_lie**", "",
+                  table([("P", sel(runs, "P")), ("P*", sel(runs, "P*"))] +
+                        [(f"P, {k}={v}", select(runs, method="P", heterogeneity="iid", adversary_unit="tenant",
+                                                evidence="strategic_lie", **{k: v}))
+                         for k, v in (("aggregation", "median"), ("aggregation", "fedavg"), ("personalize", False),
+                                      ("language", False), ("verification", False))],
+                        ["w_mae_adversarial_cp", "w_mae_honest_cp", "gate_false", "rank_mean"], rng), ""]
+
     lines += ["## E6 · sensitivity of P (iid, honest)", "",
               table([("P (μ=10, sync 4, λ=0.7)", {s: r for s, r in select(runs, method="P", heterogeneity="iid").items()
                                                   if s < 5})] +
@@ -323,7 +376,7 @@ def main(argv=None):
     shutil.copyfile(a.runs, out / "runs.jsonl")  # raw per-run summaries travel with the report
     report(runs, out)
     figures(runs, out)
-    print(f"wrote {out / 'report.md'} and 4 figures from {len(runs)} runs")
+    print(f"wrote {out / 'report.md'} and {len(list(out.glob('fig*.png')))} figures from {len(runs)} runs")
 
 
 if __name__ == "__main__":

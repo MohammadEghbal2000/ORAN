@@ -53,9 +53,29 @@ within the pre-registered family.
   Federation makes counterpart preferences more inferable, as the proposal anticipates.
 - Federation traffic ≈ 112 KB per simulated day for 10 cells; about 2 100 extracted messages per run.
 
+## Amendment 1: tenant-level adversaries (E7, family F4)
+
+Declared in `docs/wp4_amendment1.md` before the runs. One tenant uses the regime in every cell (iid, 10 seeds).
+
+- **A1, pooled reputation helps when deception is tenant-wide: supported for the mechanism, only for strategic
+  lies.** Under strategic lies (which include inflated, verifiably false KPI forecasts) pooling cuts the mean gate on
+  false claims from 0.169 to 0.051 (d_z = 4.2, significant). Under noise and contradictory profiles, whose KPI
+  forecasts are honest, pooling *raises* the gate on false claims (0.134 → 0.170 and 0.327 → 0.413, significant);
+  under reputation-build-up-then-lie it rises too (0.172 → 0.249, p_holm = 0.051).
+- **The gate effect does not reach model error.** No comparison of `w_mae_adversarial_cp` is significant
+  (P vs per-cell P, vs B4, vs B3, all regimes). A2 (H2 at tenant level) is not supported.
+- **Reading:** reputation measures KPI-claim honesty. Pooling makes that signal stronger, which helps exactly when
+  KPI honesty and preference honesty coincide (strategic liars) and hurts when they diverge (honest forecasts with
+  unreliable preference claims, or honest-then-deceptive). Together with the agent-level result above, pooling is a
+  conditional mechanism: its value depends on whether deception is tenant-wide and whether it is visible in
+  verifiable claims. This is the proposal's transfer assumption, now with both failure modes measured.
+- Verification matters at tenant level: without it, the gate on false claims is 0.398 and error on the liar's models
+  is the highest of all variants (0.166). Dropping language gives the lowest error on the liar's models (0.117) but
+  the highest on honest counterparts (0.101): a direct trade-off.
+
 ## Suggested next steps (for discussion, not done)
 
-1. Repeat E2/E5 with **tenant-level** adversaries (the counterpart lies in every cell) to test when pooled reputation
-   helps; declare it as an amendment first.
-2. Clustered federation (named as optional in the proposal) for the clustered and severe settings.
-3. More seeds for F1 as a declared power amendment.
+1. Clustered federation (named as optional in the proposal) for the clustered and severe settings.
+2. More seeds for F1 as a declared power amendment.
+3. A reputation that also checks preference claims against later offer behaviour, so it does not rest on KPI
+   honesty alone (follow-up paper scope: learned gate / advanced reputation).
