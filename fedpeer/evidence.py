@@ -103,7 +103,7 @@ def compose(rng, profile, prefs, role, next_need, sender, cell, t, msg_id, lying
     (reversed weight order, 'high' reservation, inflated KPI forecast)."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile {profile!r}")
-    w = prefs.w[::-1] if lying else prefs.w
+    w = -prefs.w if lying else prefs.w  # negation flips every pairwise order; reversing the array would not
     i, j = rng.choice(3, 2, replace=False)
     hi, lo = (i, j) if w[i] >= w[j] else (j, i)
     if profile == "contradictory" and rng.random() < 0.5:

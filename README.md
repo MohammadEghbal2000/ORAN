@@ -17,6 +17,8 @@ WP3 (federation, B4 and P) are done**.
 | `fedpeer/federation.py` | tenant-owned pair-specific aggregation: FedAvg, reliability weights, median (eqs. 15–16), personalization (eq. 17) |
 | `fedpeer/simulator.py` | epoch loop, B0 static, B1 full-information Nash mediator, B2 offers-only, B3 gated language, B4 FedAvg, P proposed, emergency fallback |
 | `fedpeer/run.py` | CLI, logs, transfer gain Δ_transfer against B3 of the same seed (eq. 19) |
+| `fedpeer/experiments.py` | WP4 grid E1–E6 (heterogeneity, corruption, deadlines, late-joining cells, scale, ablations, sensitivity) |
+| `fedpeer/analysis.py` | pre-registered paired sign-flip tests, Holm correction, bootstrap CIs, tables and figures |
 
 Agents only see their own utility, the validator's feasible set and their own peer model; ground truth is read
 only by the evaluator. Fallback allocations are logged separately and never counted as agreements.
@@ -56,7 +58,17 @@ python -m fedpeer.bench_llm --model qwen2.5:3b --base-url http://localhost:11434
 
 Logs go to the `--out` folder (`*_negotiations.csv`, `*_sla.csv`, `summary.json`).
 
+## WP4 evaluation
+
+The analysis plan was committed before any result existed: [`docs/wp4_preregistration.md`](docs/wp4_preregistration.md).
+
+```bash
+python -m fedpeer.experiments --workers 4     # 625 runs, resumable; results/wp4/runs.jsonl
+python -m fedpeer.analysis                    # reports/wp4/report.md, figures, copy of runs.jsonl
+```
+
+Results: [`reports/wp4/report.md`](reports/wp4/report.md).
+
 ## Next
 
-WP4: full factorial evaluation (deadlines, cell counts, corruption 0/10/30%, all evidence regimes), paired
-statistics with Holm correction, figures.
+WP5: O-RAN assumptions review with a domain expert, manuscript.

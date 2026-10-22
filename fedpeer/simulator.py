@@ -123,15 +123,15 @@ def run(cfg):
     def sync():
         """Method step 8: each tenant aggregates its own agents' models of one counterpart across cells."""
         for s, sp in {(s, sp) for _, s, sp in peers}:
-            members = [peers[n, s, sp] for n in range(cfg.n_cells)
-                       if (n, s, sp) in peers and peers[n, s, sp].n_negotiations > 0]
+            models = [peers[n, s, sp] for n in range(cfg.n_cells) if (n, s, sp) in peers]
+            members = [m for m in models if m.n_negotiations > 0]  # only models with evidence contribute
             if not members:
                 continue
             fed[s, sp] = aggregate([m.theta for m in members], [m.n_negotiations for m in members],
                                    [m.reliability_mass for m in members], rule)
-            for m in members:
+            for m in models:  # all receive, so a still-unused model is not frozen at an earlier state
                 m.load(personalize(fed[s, sp], m.theta, m.n_negotiations, cfg.mu) if personal else fed[s, sp])
-            stats["fl_bytes"] += 2 * len(members) * fed[s, sp].nbytes  # upload + download
+            stats["fl_bytes"] += (len(members) + len(models)) * fed[s, sp].nbytes  # uploads + downloads
         stats["syncs"] += 1
 
     def converse(hist, R, D, n, t):
@@ -154,7 +154,8 @@ def run(cfg):
                     if t + 1 < cfg.n_epochs:
                         pending.append((t + 1, n, obs, snd, ev.claim.value, ev.event_id))
                     continue
-                history = said.setdefault((n, obs, snd), [])
+                # reservation levels differ by role for an honest sender, so they are only compared within a role
+                history = said.setdefault((n, obs, snd, role if ev.claim.kind == "reservation_level" else ""), [])
                 # a = 1: preference claims are not verifiable now (neutral, not "true")
                 # shortcut: pooled reputation is read live, not only at sync epochs; upgrade if transport delay matters
                 r = rep.pooled(obs, snd) if pooled else rep.score((n, obs, snd))

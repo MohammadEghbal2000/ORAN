@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from fedpeer.contracts import Q_GRID, X, sample_preferences
-from fedpeer.evidence import Claim, MockExtractor, compose, consistency, gate, match_counts, screen
+from fedpeer.evidence import Claim, MockExtractor, compose, consistency, gate, is_true, match_counts, screen
 from fedpeer.llm import LLMExtractor
 from fedpeer.negotiation import Negotiator, negotiate
 from fedpeer.peer_model import PeerModel
@@ -46,6 +46,13 @@ def test_allowlist_blocks_forbidden_content():
                 {"type": "free_text"}]:
         with pytest.raises(ValueError):
             screen(bad)
+
+
+def test_strategic_lie_contradicts_every_weight_order():
+    rng = np.random.default_rng(0)
+    for prefs in sample_preferences(rng, 3, 20, "severe").values():
+        msg = compose(rng, "strategic_lie", prefs, "D", 30.0, 0, 0, 0, "m", True)
+        assert all(not is_true(c, prefs, "D") for c in msg.claims if c.kind == "weight_order")
 
 
 def test_consistency_drops_on_contradiction():

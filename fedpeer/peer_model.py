@@ -78,7 +78,9 @@ class PeerModel:
         self.obs += [(i, counterpart_role, y) for i, y in self.labels(history, counterpart_role, agreed)]
         theirs = [i for p, i in history if p == counterpart_role]
         self.concessions += [(a, b, counterpart_role) for a, b in zip(theirs, theirs[1:])]
-        self.language.update({(c.key(), role): (c, role, g) for c, role, g in language})
+        # weight orders are role-free; only reservation levels are per role
+        self.language.update({(c.key(), role if c.kind == "reservation_level" else ""): (c, role, g)
+                              for c, role, g in language})
         self.reliability_mass += sum(g for _, _, g in language)
         self.obs, self.concessions = self.obs[-self.window:], self.concessions[-self.window:]
         self.n_negotiations += 1

@@ -8,6 +8,7 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 test = ["pytest"]
 llm = ["openai"]
+analysis = ["matplotlib"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
