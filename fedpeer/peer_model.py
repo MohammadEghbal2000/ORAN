@@ -13,13 +13,11 @@ def _sigmoid(z):
 
 
 def _num_grad(f, z, h=1e-4):
-    # shortcut: central differences over 9 parameters; switch to autodiff if the model grows
-    g = np.empty_like(z)
-    for i in range(len(z)):
-        e = np.zeros_like(z)
-        e[i] = h
-        g[i] = (f(z + e) - f(z - e)) / (2 * h)
-    return g
+    """Central differences; f takes a (K, 9) batch so all 2 * 9 probes cost one vectorized call.
+    shortcut: numeric gradient over 9 parameters; switch to autodiff if the model grows."""
+    e = np.eye(len(z)) * h
+    losses = f(np.vstack([z + e, z - e]))
+    return (losses[:len(z)] - losses[len(z):]) / (2 * h)
 
 
 class PeerModel:
@@ -103,25 +101,31 @@ class PeerModel:
         levels = [(ROLES.index(role), *LEVELS[c.level], g) for c, role, g in lang if c.kind == "reservation_level"]
         return np.array(orders, float).reshape(-1, 3), np.array(levels, float).reshape(-1, 4)
 
-    def _loss(self, z, data, lang):
-        w, g, r, tau = self.unpack(z)
-        total = self.prior_strength * np.sum((z - self.z0) ** 2)
+    def _losses(self, Z, data, lang):
+        """Loss for every row of Z (K, 9)."""
+        e = np.exp(Z[:, :3])
+        w, g, r, tau = e / e.sum(1, keepdims=True), np.exp(Z[:, 3:6]), _sigmoid(Z[:, 6:8]), np.exp(Z[:, 8:9])
+
+        def u(x):  # (K, N) utilities of N contracts under each parameter row
+            return (w[:, None, :] * x[None, :, :] ** g[:, None, :]).sum(2)
+
+        total = self.prior_strength * ((Z - self.z0) ** 2).sum(1)
         for k, xo, y, xa, xb in data:
-            p = np.clip(_sigmoid(((w * xo ** g).sum(1) - r[k]) / tau), 1e-6, 1 - 1e-6)
-            total -= np.sum(y * np.log(p) + (1 - y) * np.log(1 - p))
+            p = np.clip(_sigmoid((u(xo) - r[:, k:k + 1]) / tau), 1e-6, 1 - 1e-6)
+            total -= (y * np.log(p) + (1 - y) * np.log(1 - p)).sum(1)
             # the counterpart's later offers should not be better for it than its earlier ones
-            total += self.concession_weight * np.maximum(0, (w * xb ** g).sum(1) - (w * xa ** g).sum(1)).sum()
+            total += self.concession_weight * np.maximum(0, u(xb) - u(xa)).sum(1)
         orders, levels = lang
         ia, ib, ri = orders[:, 0].astype(int), orders[:, 1].astype(int), levels[:, 0].astype(int)
-        hinge_w = np.maximum(0, w[ib] - w[ia] + self.margin)                          # eq. 9: w_a > w_b
-        hinge_r = np.maximum(0, levels[:, 1] - r[ri]) + np.maximum(0, r[ri] - levels[:, 2])  # r inside the level bin
-        return total + self.language_weight * (orders[:, 2] @ hinge_w + levels[:, 3] @ hinge_r)  # eq. 10: g-weighted
+        hinge_w = np.maximum(0, w[:, ib] - w[:, ia] + self.margin)                       # eq. 9: w_a > w_b
+        hinge_r = np.maximum(0, levels[:, 1] - r[:, ri]) + np.maximum(0, r[:, ri] - levels[:, 2])  # r in level bin
+        return total + self.language_weight * (hinge_w @ orders[:, 2] + hinge_r @ levels[:, 3])  # eq. 10: g-weighted
 
     def _fit(self):
         data, lang = self._data(), self._language_data()
         m = v = np.zeros_like(self.z)
         for t in range(1, self.steps + 1):  # Adam, warm-started from the persistent estimate
-            g = _num_grad(lambda z: self._loss(z, data, lang), self.z)
+            g = _num_grad(lambda Z: self._losses(Z, data, lang), self.z)
             m, v = 0.9 * m + 0.1 * g, 0.999 * v + 0.001 * g * g
             self.z = self.z - self.lr * (m / (1 - 0.9 ** t)) / (np.sqrt(v / (1 - 0.999 ** t)) + 1e-8)
 
