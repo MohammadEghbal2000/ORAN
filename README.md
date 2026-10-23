@@ -53,6 +53,8 @@ Real LLM extraction (`pip install openai`, key read from `OPENAI_API_KEY`, respo
 
 ```bash
 python -m fedpeer.bench_llm --model gpt-4.1-nano --n 20 --price-in 0.10 --price-out 0.40
+# held-out check used in the paper (prompt frozen; 144 API calls, about $0.008 on 23 Oct 2026):
+python -m fedpeer.bench_llm --seed 1 --n 200 --tuning-seed 0 --price-in 0.10 --price-out 0.40 --out reports/llm/heldout_gpt-4.1-nano_seed1_n200.json
 python -m fedpeer.bench_llm --model qwen2.5:3b --base-url http://localhost:11434/v1   # Ollama
 ```
 
@@ -65,10 +67,11 @@ The analysis plan was committed before any result existed: [`docs/wp4_preregistr
 ```bash
 python -m fedpeer.experiments --workers 4     # 625 runs, resumable; results/wp4/runs.jsonl
 python -m fedpeer.analysis                    # reports/wp4/report.md, figures, copy of runs.jsonl
+python -m fedpeer.analysis --paper-figures paper/figures   # also the title-free figures for the manuscript
 ```
 
 Results: [`reports/wp4/report.md`](reports/wp4/report.md).
 
 ## Next
 
-WP5: O-RAN assumptions review with a domain expert, manuscript.
+WP5: manuscript (kept outside this repository).

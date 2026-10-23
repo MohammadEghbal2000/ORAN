@@ -182,7 +182,8 @@ def _as_x(sel, metric):
     return {s: {"x": r.get(metric, NAN)} for s, r in sel.items()}
 
 
-def figures(runs, out):
+def figures(runs, out, titles=True):
+    """titles=False drops the in-figure titles, for the manuscript where captions carry them."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -195,7 +196,7 @@ def figures(runs, out):
                                           ("rank_mean", "weight-rank agreement (higher is better)"))):
         _bars(ax, HETEROGENEITY, learners, lambda g, m: _as_x(select(runs, method=m, heterogeneity=g), metric), label)
     axes[0].legend(frameon=False, ncol=4, loc="lower left", bbox_to_anchor=(0, 1.02))
-    fig.suptitle("E1 · peer-model quality by preference heterogeneity (10 seeds, 95% CI)", x=0.01, ha="left")
+    titles and fig.suptitle("E1 · peer-model quality by preference heterogeneity (10 seeds, 95% CI)", x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(out / "fig1_e1_learning.png")
     plt.close(fig)
@@ -219,7 +220,7 @@ def figures(runs, out):
         ax.set_xlabel("negotiations already seen with this counterpart", color=MUTED)
         _style(ax, "weight MAE" if h == "iid" else "")
     axes[0].legend(frameon=False, ncol=4, loc="lower left", bbox_to_anchor=(0, 1.1))
-    fig.suptitle("E1 · learning curves (mean over 10 seeds)", x=0.01, ha="left")
+    titles and fig.suptitle("E1 · learning curves (mean over 10 seeds)", x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(out / "fig2_e1_curves.png")
     plt.close(fig)
@@ -231,7 +232,7 @@ def figures(runs, out):
               "weight MAE, honest counterparts" if frac == 0.1 else "")
         ax.set_title(f"{frac:.0%} adversarial agents", color=INK, loc="left")
     axes[0].legend(frameon=False, ncol=3, loc="lower left", bbox_to_anchor=(0, 1.1))
-    fig.suptitle("E2 · contamination of models of honest counterparts (lower is better)", x=0.01, ha="left")
+    titles and fig.suptitle("E2 · contamination of models of honest counterparts (lower is better)", x=0.01, ha="left")
     fig.tight_layout()
     fig.savefig(out / "fig3_e2_contamination.png")
     plt.close(fig)
@@ -255,7 +256,7 @@ def figures(runs, out):
     ax.grid(axis="x", color=GRID)
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("weight MAE on honest counterparts (lower is better)", color=MUTED)
-    ax.set_title("E5 · ablations of P under 30% strategic liars", loc="left", color=INK)
+    titles and ax.set_title("E5 · ablations of P under 30% strategic liars", loc="left", color=INK)
     fig.tight_layout()
     fig.savefig(out / "fig4_e5_ablation.png")
     plt.close(fig)
@@ -267,7 +268,7 @@ def figures(runs, out):
             _bars(ax, REGIMES, ("B3", "B4", "P", "P*"),
                   lambda g, m: _as_x(tenant_level(evidence=g)(runs, m), metric), label)
         axes[0].legend(frameon=False, ncol=4, loc="lower left", bbox_to_anchor=(0, 1.02))
-        fig.suptitle("E7 · one tenant deceives in every cell (amendment 1; lower is better)", x=0.01, ha="left")
+        titles and fig.suptitle("E7 · one tenant deceives in every cell (amendment 1; lower is better)", x=0.01, ha="left")
         fig.tight_layout()
         fig.savefig(out / "fig5_e7_tenant_level.png")
         plt.close(fig)
@@ -369,6 +370,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--runs", default="results/wp4/runs.jsonl")
     p.add_argument("--out", default="reports/wp4")
+    p.add_argument("--paper-figures", help="also write the figures without titles to this folder")
     a = p.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -376,6 +378,9 @@ def main(argv=None):
     shutil.copyfile(a.runs, out / "runs.jsonl")  # raw per-run summaries travel with the report
     report(runs, out)
     figures(runs, out)
+    if a.paper_figures:
+        Path(a.paper_figures).mkdir(parents=True, exist_ok=True)
+        figures(runs, Path(a.paper_figures), titles=False)
     print(f"wrote {out / 'report.md'} and {len(list(out.glob('fig*.png')))} figures from {len(runs)} runs")
 
 

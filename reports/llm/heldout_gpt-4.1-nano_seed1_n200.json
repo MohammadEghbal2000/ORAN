@@ -1,0 +1,121 @@
+{
+  "model": "gpt-4.1-nano",
+  "base_url": null,
+  "seed": 1,
+  "n": 200,
+  "tuning_seed": 0,
+  "prompt_sha256": "27fad5257c1b942f6f02152302d7802ecc14ec49225f215447b4bab57413cca6",
+  "usage": {
+    "calls": 0,
+    "cache_hits": 200,
+    "prompt_tokens": 0,
+    "completion_tokens": 0
+  },
+  "cost_usd": null,
+  "overlap": {
+    "in_tuning_set": 12,
+    "distinct_texts": 150
+  },
+  "results": {
+    "llm": {
+      "honest": {
+        "tp_fp_fn": [
+          120,
+          8,
+          8
+        ],
+        "micro_f1": 0.9375
+      },
+      "noise": {
+        "tp_fp_fn": [
+          59,
+          33,
+          14
+        ],
+        "micro_f1": 0.7151515151515152
+      },
+      "contradictory": {
+        "tp_fp_fn": [
+          120,
+          9,
+          9
+        ],
+        "micro_f1": 0.9302325581395349
+      },
+      "strategic_lie": {
+        "tp_fp_fn": [
+          68,
+          3,
+          0
+        ],
+        "micro_f1": 0.9784172661870504
+      },
+      "all": {
+        "tp_fp_fn": [
+          367,
+          53,
+          31
+        ],
+        "micro_f1": 0.8973105134474327
+      },
+      "not_in_tuning": {
+        "tp_fp_fn": [
+          350,
+          52,
+          31
+        ],
+        "micro_f1": 0.8939974457215837
+      }
+    },
+    "mock": {
+      "honest": {
+        "tp_fp_fn": [
+          125,
+          3,
+          3
+        ],
+        "micro_f1": 0.9765625
+      },
+      "noise": {
+        "tp_fp_fn": [
+          48,
+          11,
+          25
+        ],
+        "micro_f1": 0.7272727272727273
+      },
+      "contradictory": {
+        "tp_fp_fn": [
+          125,
+          0,
+          4
+        ],
+        "micro_f1": 0.984251968503937
+      },
+      "strategic_lie": {
+        "tp_fp_fn": [
+          65,
+          2,
+          3
+        ],
+        "micro_f1": 0.9629629629629629
+      },
+      "all": {
+        "tp_fp_fn": [
+          363,
+          16,
+          35
+        ],
+        "micro_f1": 0.9343629343629344
+      },
+      "not_in_tuning": {
+        "tp_fp_fn": [
+          347,
+          15,
+          34
+        ],
+        "micro_f1": 0.9340511440107672
+      }
+    }
+  }
+}
