@@ -55,6 +55,8 @@ Real LLM extraction (`pip install openai`, key read from `OPENAI_API_KEY`, respo
 python -m fedpeer.bench_llm --model gpt-4.1-nano --n 20 --price-in 0.10 --price-out 0.40
 # held-out check used in the paper (prompt frozen; 144 API calls, about $0.008 on 23 Oct 2026):
 python -m fedpeer.bench_llm --seed 1 --n 200 --tuning-seed 0 --price-in 0.10 --price-out 0.40 --out reports/llm/heldout_gpt-4.1-nano_seed1_n200.json
+# gpt-4.1-nano has since been retired; the same check repeated with its replacement (amendment 2):
+python -m fedpeer.bench_llm --model gpt-5.4-nano --seed 1 --n 200 --tuning-seed 0 --out reports/llm/heldout_gpt-5.4-nano_seed1_n200.json
 python -m fedpeer.bench_llm --model qwen2.5:3b --base-url http://localhost:11434/v1   # Ollama
 ```
 
@@ -63,9 +65,13 @@ Logs go to the `--out` folder (`*_negotiations.csv`, `*_sla.csv`, `summary.json`
 ## WP4 evaluation
 
 The analysis plan was committed before any result existed: [`docs/wp4_preregistration.md`](docs/wp4_preregistration.md).
+Two amendments were each committed before their own runs: [`docs/wp4_amendment1.md`](docs/wp4_amendment1.md)
+(tenant-level adversaries) and [`docs/wp4_amendment2.md`](docs/wp4_amendment2.md) (real LLM extractor in the loop;
+exploratory chip-aware offer rule).
 
 ```bash
-python -m fedpeer.experiments --workers 4     # 625 runs, resumable; results/wp4/runs.jsonl
+python -m fedpeer.experiments --workers 4     # 1015 runs, resumable; results/wp4/runs.jsonl
+python -m fedpeer.experiments --skip-llm      # all but the 60 E8 runs, which call the OpenAI API
 python -m fedpeer.analysis                    # reports/wp4/report.md, figures, copy of runs.jsonl
 python -m fedpeer.analysis --paper-figures paper/figures   # also the title-free figures for the manuscript
 ```
