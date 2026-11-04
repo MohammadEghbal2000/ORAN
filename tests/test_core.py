@@ -61,3 +61,14 @@ def test_offers_only_peer_model_reduces_weight_error(seed):
                                         Negotiator(opp.utility("D"), opp.r["D"], "D"), feas, 10)
         model.observe(hist, "D", outcome == "agreement")
     assert model.weight_mae(opp.w) < 0.75 * err0
+
+
+def test_tradeoff_offer_gives_counterpart_most_at_target():
+    own = np.array([0.9, 0.62, 0.61, 0.3])  # target 0.6 at k=T-1 makes contracts 0-2 acceptable to us
+    opp = np.array([0.1, 0.5, 0.8, 0.95])   # counterpart values contract 2 most among those
+    feas = np.ones(4, bool)
+    plain = Negotiator(own, 0.6, "R", opp)
+    chip = Negotiator(own, 0.6, "R", opp, tradeoff=True)
+    assert chip.offer(9, 10, feas) == 2  # trade-off: best for the counterpart without going below our target
+    assert plain.offer(9, 10, feas) != 3 and chip.offer(9, 10, feas) != 3  # never below the target
+    assert Negotiator(own, 0.6, "R", None, tradeoff=True).offer(9, 10, feas) in (0, 1, 2)  # no model: plain rule

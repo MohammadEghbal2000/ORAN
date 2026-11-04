@@ -48,6 +48,12 @@ def grid():
     for kw in ({"aggregation": "median"}, {"aggregation": "fedavg"}, {"personalize": False},
                {"language": False}, {"verification": False}):
         add(("P",), heterogeneity="iid", evidence="strategic_lie", adversary_unit="tenant", **kw)
+    # E8 (amendment 2): real LLM extractor in the loop, replicating E1 iid and E2 30% strategic liars
+    for kw in ({}, {"evidence": "strategic_lie", "adversary_frac": 0.3}):
+        add(LEARNERS, heterogeneity="iid", extractor="llm", llm_model="gpt-5.4-nano", **kw)  # gpt-4.1-nano is retired
+    # E9 (amendment 2, exploratory): chip-aware (trade-off) offer rule, every heterogeneity, honest senders
+    for h in HETEROGENEITY:
+        add(("B2", *LEARNERS), heterogeneity=h, tradeoff=True)
     # E6 sensitivity of P (base P comes from E1 iid)
     for kw in ({"mu": 1.0}, {"mu": 100.0}, {"sync_epochs": 2}, {"sync_epochs": 8}, {"lam": 0.5}, {"lam": 0.9}):
         add(("P",), seeds=range(5), heterogeneity="iid", **kw)
@@ -58,6 +64,8 @@ def key(cfg):
     d = asdict(cfg)
     if d["adversary_unit"] == "agent":  # added after the first grid; keeps the earlier runs' keys valid
         del d["adversary_unit"]
+    if not d["tradeoff"]:  # added in amendment 2, same reason
+        del d["tradeoff"]
     return hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
 
 

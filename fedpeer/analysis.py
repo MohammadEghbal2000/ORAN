@@ -25,7 +25,7 @@ LOWER_BETTER = {"w_mae_mean", "w_mae_cold", "brier_mean", "w_mae_cold_late", "ti
                 "w_mae_adversarial_cp", "gate_false", "false_admission_rate", "timeout_rate", "nash_gap"}
 BASE = dict(n_cells=10, n_epochs=96, t_max=10, evidence="honest", adversary_frac=0.3, adversary_unit="agent",
             language=True, verification=True, aggregation="reliability", personalize=True, pooled_reputation=True,
-            mu=10.0, sync_epochs=4, late_join_frac=0.0, lam=0.7)
+            mu=10.0, sync_epochs=4, late_join_frac=0.0, lam=0.7, extractor="mock", tradeoff=False)
 REGIMES = ("noise", "contradictory", "strategic_lie", "rep_then_lie")
 LIE = dict(heterogeneity="iid", evidence="strategic_lie", adversary_frac=0.3)
 
@@ -118,6 +118,25 @@ def families(runs):
                 rows.append((ev, m, "P per-cell rep.", compare(P, sel(runs, "P*"), m)))
             for base in ("B4", "B3"):
                 rows.append((ev, "w_mae_adversarial_cp", base, compare(P, sel(runs, base), "w_mae_adversarial_cp")))
+    if any(r.get("extractor") == "llm" for r in runs):
+        rows = fam["F5 real LLM extractor, amendment 2"] = []
+        for scen, kw, metrics in (("iid", {}, ("w_mae_mean", "w_mae_cold", "rank_mean", "brier_mean")),
+                                  ("strategic_lie 30%", dict(evidence="strategic_lie", adversary_frac=0.3),
+                                   ("w_mae_honest_cp",))):
+            P = select(runs, method="P", heterogeneity="iid", extractor="llm", **kw)
+            for base in ("B3", "B4"):
+                for m in metrics:
+                    rows.append((scen, m, base, compare(P, select(runs, method=base, heterogeneity="iid",
+                                                                   extractor="llm", **kw), m)))
+    if any(r.get("tradeoff") for r in runs):
+        rows = fam["F6 chip-aware offers, amendment 2 (exploratory)"] = []
+        for h in HETEROGENEITY:
+            def chip(m, t=True):
+                return select(runs, method=m, heterogeneity=h, tradeoff=t)
+            rows += [(h, "welfare", "P (plain rule)", compare(chip("P"), chip("P", False), "welfare")),
+                     (h, "nash_gap", "P (plain rule)", compare(chip("P"), chip("P", False), "nash_gap")),
+                     (h, "welfare", "B3 (chip rule)", compare(chip("P"), chip("B3"), "welfare")),
+                     (h, "welfare", "B2 (chip rule), B3 in place of P", compare(chip("B3"), chip("B2"), "welfare"))]
     for rows in fam.values():
         for row, adj in zip(rows, holm([r[3]["p"] for r in rows])):
             row[3]["p_holm"] = float(adj)
@@ -363,6 +382,25 @@ def report(runs, out):
                      for k, v in (("mu", 1.0), ("mu", 100.0), ("sync_epochs", 2), ("sync_epochs", 8), ("lam", 0.5),
                                   ("lam", 0.9))],
                     ["w_mae_mean", "w_mae_cold", "rank_mean", "welfare", "fl_bytes"], rng), ""]
+    if any(r.get("extractor") == "llm" for r in runs):
+        lines += ["## E8 · real LLM extractor (amendment 2, iid)", ""]
+        for scen, kw, metrics in (("honest", {}, ["w_mae_mean", "w_mae_cold", "rank_mean", "brier_mean",
+                                                   "extraction_f1", "gate_true", "welfare"]),
+                                  ("30% strategic liars", dict(evidence="strategic_lie", adversary_frac=0.3),
+                                   ["w_mae_honest_cp", "w_mae_adversarial_cp", "gate_false", "extraction_f1",
+                                    "welfare"])):
+            lines += [f"**{scen}**", "", table([(f"{m}, {ex}", select(runs, method=m, heterogeneity="iid",
+                                                                      extractor=ex, **kw))
+                                                for m in ("B3", "B4", "P") for ex in ("mock", "llm")], metrics, rng),
+                      ""]
+    if any(r.get("tradeoff") for r in runs):
+        lines += ["## E9 · chip-aware offer rule (amendment 2, exploratory, honest senders)", ""]
+        for h in HETEROGENEITY:
+            lines += [f"**{h}**", "", table([(f"{m}, {'chip' if t else 'plain'}",
+                                              select(runs, method=m, heterogeneity=h, tradeoff=t))
+                                             for m in learners for t in (False, True)],
+                                            ["welfare", "nash_gap", "pareto_dist", "agreement_rate", "jain",
+                                             "sla_satisfaction", "rank_mean"], rng), ""]
     (out / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 

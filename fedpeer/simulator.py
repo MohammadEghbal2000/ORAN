@@ -51,6 +51,7 @@ class Config:
     mu: float = 10.0                  # eq. 17 cold-start hyperparameter
     sync_epochs: int = 4              # 60 min at 15-min epochs
     late_join_frac: float = 0.0       # share of cells whose agents only start negotiating at mid-horizon
+    tradeoff: bool = False            # amendment 2: chip-aware (trade-off) offer rule for both parties
 
 
 def _alloc(static, active, n):
@@ -231,8 +232,9 @@ def run(cfg):
                                "leak": leakage(m_rd.theta[:3], prefs[D, n].w),  # opponent as observer
                                "counterpart_profile": profiles[D, n]}
                         outcome, idx, rounds, hist = negotiate(
-                            Negotiator(uR, rR, "R", m_rd.utility("D"), cfg.lam),
-                            Negotiator(prefs[D, n].utility("D"), prefs[D, n].r["D"], "D", m_dr.utility("R"), cfg.lam),
+                            Negotiator(uR, rR, "R", m_rd.utility("D"), cfg.lam, tradeoff=cfg.tradeoff),
+                            Negotiator(prefs[D, n].utility("D"), prefs[D, n].r["D"], "D", m_dr.utility("R"), cfg.lam,
+                                       tradeoff=cfg.tradeoff),
                             feas[D], cfg.t_max)
                         if hist:  # held-out: scored before the model sees this negotiation
                             err["brier"] = m_rd.brier(hist, "D", outcome == "agreement")

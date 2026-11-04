@@ -14,6 +14,7 @@ class Negotiator:
     lam: float = 0.7                     # weight on OWN utility in eq. 21
     concession: float = 0.5              # e < 1: Boulware
     band: float = 0.05                   # iso-utility band around the concession target
+    tradeoff: bool = False               # chip-aware offers (amendment 2): see offer()
 
     def target(self, k, T, feasible):
         top = self.utility[feasible].max()
@@ -26,6 +27,10 @@ class Negotiator:
             return None
         tgt = self.target(k, T, feasible)
         above = feasible & (self.utility >= tgt)
+        if self.tradeoff and self.opp_utility is not None:
+            # trade-off move (logrolling): keep own utility at least at the target and give the counterpart the contract
+            # it values most, i.e. concede on issues cheap for us and valuable for it; ties go to our own utility
+            return int(np.where(above, self.opp_utility + 1e-9 * self.utility, -np.inf).argmax())
         cand = above & (self.utility <= tgt + self.band)
         if not cand.any():
             cand = above & (self.utility == self.utility[above].min())
