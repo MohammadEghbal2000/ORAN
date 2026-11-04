@@ -80,12 +80,13 @@ def main(argv=None):
     p.add_argument("--out", default="results/wp4/runs.jsonl")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--dry-run", action="store_true", help="only count the runs still to do")
+    p.add_argument("--skip-llm", action="store_true", help="leave out runs that call the LLM API")
     a = p.parse_args(argv)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     done = {json.loads(line)["key"] for line in out.read_text().splitlines()} if out.exists() else set()
     # heaviest first, so the tail of the grid is short
-    todo = sorted((c for c in grid() if key(c) not in done), key=lambda c: (c.method in LEARNERS) * c.n_cells,
+    todo = sorted((c for c in grid() if key(c) not in done and not (a.skip_llm and c.extractor == "llm")),key=lambda c: (c.method in LEARNERS) * c.n_cells,
                   reverse=True)
     print(f"{len(done)} done, {len(todo)} to run", flush=True)
     if a.dry_run or not todo:
